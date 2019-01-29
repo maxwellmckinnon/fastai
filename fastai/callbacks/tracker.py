@@ -85,7 +85,6 @@ class SaveModelCallback(TrackerCallback):
         if self.every not in ['improvement', 'epoch']:
             warn(f'SaveModel every {self.every} is invalid, falling back to "improvement".')
             self.every = 'improvement'
-        super().__post_init__()
 
     def on_epoch_end(self, epoch, **kwargs:Any)->None:
         "Compare the value monitored to its best score and maybe save the model."
@@ -93,6 +92,7 @@ class SaveModelCallback(TrackerCallback):
         else: #every="improvement"
             current = self.get_monitor_value()
             if current is not None and self.operator(current, self.best):
+                print(f'Better model found at epoch {epoch} with {self.monitor} value: {current}.')
                 self.best = current
                 self.learn.save(f'{self.name}')
 

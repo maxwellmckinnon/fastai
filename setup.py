@@ -30,7 +30,7 @@ requirements = to_list("""
     bottleneck           # performance-improvement for numpy
     dataclasses ; python_version<'3.7'
     fastprogress>=0.1.18
-    bs4
+    beautifulsoup4
     matplotlib
     numexpr              # performance-improvement for numpy
     numpy>=1.12
@@ -42,7 +42,7 @@ requirements = to_list("""
     requests
     scipy
     spacy>=2.0.18
-    torch
+    torch>=1.0.0
     torchvision
     typing
 """)
@@ -78,6 +78,7 @@ dev_requirements = { 'dev' : to_list("""
     pip>=9.0.1
     pipreqs>=0.4.9
     pytest
+    responses                    # for requests testing
     traitlets
     wheel>=0.30.0
 """) }
