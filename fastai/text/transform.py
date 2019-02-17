@@ -32,8 +32,8 @@ class SpacyTokenizer(BaseTokenizer):
             self.tok.tokenizer.add_special_case(w, [{ORTH: w}])
 
 def spec_add_spaces(t:str) -> str:
-    "Add spaces around / and # in `t`."
-    return re.sub(r'([/#])', r' \1 ', t)
+    "Add spaces around / and # in `t`. \n"
+    return re.sub(r'([/#\n])', r' \1 ', t)
 
 def rm_useless_spaces(t:str) -> str:
     "Remove multiple spaces in `t`."
@@ -76,6 +76,7 @@ def deal_caps(x:Collection[str]) -> Collection[str]:
     "Replace all words in `x` by their lower version and add `TK_MAJ`."
     res = []
     for t in x:
+        if t == '': continue
         if t[0].isupper() and t[1:].islower(): res.append(TK_MAJ)
         res.append(t.lower())
     return res
@@ -119,7 +120,7 @@ class Tokenizer():
             return sum(e.map(self._process_all_1, partition_by_cores(texts, self.n_cpus)), [])
 
 class Vocab():
-    "Contain the correspondance between numbers and tokens and numericalize."
+    "Contain the correspondence between numbers and tokens and numericalize."
     def __init__(self, itos:Collection[str]):
         self.itos = itos
         self.stoi = collections.defaultdict(int,{v:k for k,v in enumerate(self.itos)})
@@ -130,7 +131,7 @@ class Vocab():
 
     def textify(self, nums:Collection[int], sep=' ') -> List[str]:
         "Convert a list of `nums` to their tokens."
-        return sep.join([self.itos[i] for i in nums])
+        return sep.join([self.itos[i] for i in nums]) if sep is not None else [self.itos[i] for i in nums]
 
     def __getstate__(self):
         return {'itos':self.itos}
@@ -143,7 +144,7 @@ class Vocab():
     def create(cls, tokens:Tokens, max_vocab:int, min_freq:int) -> 'Vocab':
         "Create a vocabulary from a set of `tokens`."
         freq = Counter(p for o in tokens for p in o)
-        itos = [o for o,c in freq.most_common(max_vocab) if c > min_freq]
+        itos = [o for o,c in freq.most_common(max_vocab) if c >= min_freq]
         for o in reversed(defaults.text_spec_tok):
             if o in itos: itos.remove(o)
             itos.insert(0, o)

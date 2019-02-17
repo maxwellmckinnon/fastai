@@ -97,7 +97,7 @@ def fit(epochs:int, model:nn.Module, loss_func:LossFunction, opt:optim.Optimizer
             if cb_handler.on_epoch_end(val_loss): break
     except Exception as e:
         exception = e
-        raise e
+        raise
     finally: cb_handler.on_train_end(exception)
 
 loss_func_name2activ = {'cross_entropy_loss': F.softmax, 'nll_loss': torch.exp, 'poisson_nll_loss': torch.exp,
@@ -220,9 +220,15 @@ class Learner():
         torch.save(state, open(self.path/fname, 'wb'))
         self.model.to(device)
 
+    def hibernate(self, fname:str='export.pkl'):
+        "Export the state of the `Learner` in `self.path/fname` and remove the object from memory. Use load_learner() to restore."
+        self.export(self, fname)
+        self.destroy()
+
     def save(self, name:PathOrStr, return_path:bool=False, with_opt:bool=True):
         "Save model and optimizer state (if `with_opt`) with `name` to `self.model_dir`."
         path = self.path/self.model_dir/f'{name}.pth'
+        if not hasattr(self, 'opt'): with_opt=False
         if not with_opt: state = get_model(self.model).state_dict()
         else: state = {'model': get_model(self.model).state_dict(), 'opt':self.opt.state_dict()}
         torch.save(state, path)
@@ -232,19 +238,61 @@ class Learner():
         "Return DataLoader for DatasetType `ds_type`."
         return self.data.dl(ds_type)
 
-    def load(self, name:PathOrStr, device:torch.device=None, strict:bool=True, with_opt:bool=None):
+    def load(self, name:PathOrStr, device:torch.device=None, strict:bool=True, with_opt:bool=None, purge:bool=True):
         "Load model and optimizer state (if `with_opt`) `name` from `self.model_dir` using `device`."
+        if purge: self.purge(clear_opt=ifnone(with_opt, False))
         if device is None: device = self.data.device
         state = torch.load(self.path/self.model_dir/f'{name}.pth', map_location=device)
         if set(state.keys()) == {'model', 'opt'}:
             get_model(self.model).load_state_dict(state['model'], strict=strict)
             if ifnone(with_opt,True):
-                if not hasattr(self, 'opt'): opt = self.create_opt(defaults.lr, self.wd)
+                if not hasattr(self, 'opt'): self.create_opt(defaults.lr, self.wd)
                 try:    self.opt.load_state_dict(state['opt'])
                 except: pass
         else:
             if with_opt: warn("Saved filed doesn't contain an optimizer state.")
             get_model(self.model).load_state_dict(state, strict=strict)
+        del state
+        gc.collect()
+        return self
+
+    def destroy(self):
+        "Free the Learner internals, leaving just an empty shell that consumes no memory"
+        attrs = [k for k in self.__dict__.keys() if not k.startswith("__")]
+        for a in attrs: delattr(self, a)
+        gc.collect()
+        print("this Learner object self-destroyed - it still exists, but no longer usable")
+        # in case someone tries to call methods on this destroyed object
+        def _catch_all_destroyed(self, name):
+            def method(*args, **kwargs): print("this object has been destroyed")
+            return method
+        self.__getattr__ = _catch_all_destroyed
+
+    def purge(self, clear_opt:bool=True):
+        "Purge the `Learner` of all cached attributes to release some GPU memory."
+
+        tmp_file = self.path/'purge-tmp.pkl'
+        attrs_all = [k for k in self.__dict__.keys() if not k.startswith("__")]
+        attrs_pkl = ['bn_wd', 'callback_fns', 'layer_groups', 'loss_func', 'metrics', 'model',
+                     'model_dir', 'opt_func', 'path', 'train_bn', 'true_wd', 'wd']
+        # +callbacks: get pickled too, but not directly
+        attrs_keep = ['data', 'recorder']
+        attrs_del = list(set(attrs_all) - set(attrs_keep))
+        state = {a:getattr(self, a) for a in attrs_pkl}
+        state['cb_state'] = {cb.__class__:cb.get_state() for cb in self.callbacks}
+        if hasattr(self, 'opt'): state['opt'] = self.opt.get_state()
+        torch.save(state, open(tmp_file, 'wb'))
+        for a in attrs_del: delattr(self, a)
+        gc.collect()
+        state = torch.load(tmp_file)
+        os.remove(tmp_file)
+        for a in attrs_pkl: setattr(self, a, state[a])
+        cb_state = state.pop('cb_state')
+        self.callbacks = [load_callback(c,s, self) for c,s in cb_state.items()]
+        if not clear_opt and 'opt' in state:
+            self.opt = OptimWrapper.load_with_state_and_layer_group(state['opt'], self.layer_groups)
+        del state
+        gc.collect()
         return self
 
     def get_preds(self, ds_type:DatasetType=DatasetType.Valid, with_loss:bool=False, n_batch:Optional[int]=None,
@@ -342,6 +390,7 @@ class LearnerCallback(Callback):
         setattr(self.learn, self.cb_name, self)
 
     def __getattr__(self,k): return getattr(self.learn, k)
+    def __setstate__(self,data:Any): self.__dict__.update(data)
 
     @property
     def learn(self) -> Learner: return self._learn()
@@ -414,11 +463,15 @@ class Recorder(LearnerCallback):
         if show_moms:
             _, axs = plt.subplots(1,2, figsize=(12,4))
             axs[0].plot(iterations, self.lrs)
+            axs[0].set_xlabel('Iterations')
+            axs[0].set_ylabel('Learning Rate')
             axs[1].plot(iterations, self.moms)
+            axs[1].set_xlabel('Iterations')
+            axs[1].set_ylabel('Momentum')
         else: plt.plot(iterations, self.lrs)
 
     def plot(self, skip_start:int=10, skip_end:int=5)->None:
-        "Plot learning rate and losses, trimmed between `skip_start` and `skip_end`."
+        "Plot learning rate and losses, trimmed between `skip_start` and `skip_end`. Optionally plot and return min gradient"
         lrs = self.lrs[skip_start:-skip_end] if skip_end > 0 else self.lrs[skip_start:]
         losses = self.losses[skip_start:-skip_end] if skip_end > 0 else self.losses[skip_start:]
         _, ax = plt.subplots(1,1)
@@ -427,6 +480,10 @@ class Recorder(LearnerCallback):
         ax.set_xlabel("Learning Rate")
         ax.set_xscale('log')
         ax.xaxis.set_major_formatter(plt.FormatStrFormatter('%.0e'))
+        mg = (np.gradient(np.array([x.item() for x in losses]))).argmin()
+        print(f"Min numerical gradient: {lrs[mg]:.2E}")
+        ax.plot(lrs[mg],losses[mg],markersize=10,marker='o',color='red')
+        self.min_grad_lr = lrs[mg]
 
     def plot_losses(self, last:int=None)->None:
         "Plot training and validation losses."
@@ -466,7 +523,7 @@ def load_callback(class_func, state, learn:Learner):
 
 def load_learner(path:PathOrStr, fname:PathOrStr='export.pkl', test:ItemList=None):
     "Load a `Learner` object saved with `export_state` in `path/fn` with empty data, optionally add `test` and load on `cpu`."
-    state = torch.load(open(Path(path)/fname, 'rb'))
+    state = torch.load(Path(path)/fname, map_location='cpu') if defaults.device == torch.device('cpu') else torch.load(Path(path)/fname)
     model = state.pop('model')
     src = LabelLists.load_state(path, state.pop('data'))
     if test is not None: src.add_test(test)
